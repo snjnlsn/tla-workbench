@@ -55,7 +55,7 @@ You can set TLA_JAR in the local .env file.
     git submodule update --init tests/parity/upstream
     mise run parity
 
-The suite compares the shipped browser binary with TLC on the precedence regression and example_tla/Test.tla.
+The suite compares the shipped browser binary with TLC on the precedence regression and a branching model with 2,003 reachable states.
 It compares named states, initial states, and directed edges. Four upstream assignment models run unchanged on TLC.
 Each also has a reduced model whose graph must match the original on both TLC and WebAssembly.
 These reductions cover state behavior. The original models also use language features outside the browser subset.
