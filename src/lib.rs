@@ -42,55 +42,107 @@ fn identifier(s: &str) -> bool {
     s.starts_with(|c: char| c.is_ascii_alphabetic())
         && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
-fn tokens(mut s: &str) -> Result<Vec<String>> {
+// Expand aligned junction lists into grouped expressions before precedence parsing.
+fn tokens(source: &str) -> Result<Vec<String>> {
     let mut out = Vec::new();
-    while !s.trim_start().is_empty() {
-        s = s.trim_start();
-        let n = if s.starts_with('"') {
-            let mut escaped = false;
-            let mut end = None;
-            for (i, c) in s.char_indices().skip(1) {
-                if escaped {
-                    escaped = false;
-                } else if c == '\\' {
-                    escaped = true;
-                } else if c == '"' {
-                    end = Some(i + 1);
+    let mut lists: Vec<(usize, usize, String)> = Vec::new();
+    let mut depth: usize = 0;
+    let mut operand = true;
+    for line in source.lines() {
+        let mut s = line;
+        let mut first = true;
+        while !s.trim_start().is_empty() {
+            s = s.trim_start();
+            let column = line[..line.len() - s.len()].chars().count();
+            let n = if s.starts_with('"') {
+                let mut escaped = false;
+                let mut end = None;
+                for (i, c) in s.char_indices().skip(1) {
+                    if escaped {
+                        escaped = false;
+                    } else if c == '\\' {
+                        escaped = true;
+                    } else if c == '"' {
+                        end = Some(i + 1);
+                        break;
+                    }
+                }
+                end.ok_or("Unterminated string literal")?
+            } else if let Some(op) = [
+                "\\in", "..", "/\\", "\\/", "<=", ">=", "/=", "(", ")", "+", "-", "*", "=", "<",
+                ">",
+            ]
+            .iter()
+            .find(|op| s.starts_with(**op))
+            {
+                op.len()
+            } else {
+                s.bytes()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == 39)
+                    .count()
+            };
+            if n == 0 {
+                return Err(format!(
+                    "Unsupported syntax near {}",
+                    s.chars().take(16).collect::<String>()
+                ));
+            }
+            let symbol = &s[..n];
+            let mut sibling = false;
+            while let Some((indent, level, bullet)) = lists.last() {
+                if first && column <= *indent && depth > *level {
+                    return Err("Parenthesized expression crosses a junction list boundary".into());
+                }
+                if *level != depth {
+                    break;
+                }
+                if first && column == *indent && symbol == bullet {
+                    out.extend([")".into(), symbol.into(), "(".into()]);
+                    sibling = true;
+                    break;
+                }
+                if (first && column <= *indent) || symbol == ")" {
+                    out.extend([")".into(), ")".into()]);
+                    lists.pop();
+                } else {
                     break;
                 }
             }
-            end.ok_or("Unterminated string literal")?
-        } else if let Some(op) = [
-            "\\in", "..", "/\\", "\\/", "<=", ">=", "/=", "(", ")", "+", "-", "*", "=", "<", ">",
-        ]
-        .iter()
-        .find(|op| s.starts_with(**op))
-        {
-            op.len()
-        } else {
-            s.bytes()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == 39)
-                .count()
-        };
-        if n == 0 {
-            return Err(format!(
-                "Unsupported syntax near {}",
-                s.chars().take(16).collect::<String>()
-            ));
+            if !sibling {
+                if operand && matches!(symbol, "/\\" | "\\/") {
+                    lists.push((column, depth, symbol.into()));
+                    out.extend(["(".into(), "(".into()]);
+                } else {
+                    if symbol == "(" {
+                        depth += 1
+                    }
+                    if symbol == ")" {
+                        depth = depth
+                            .checked_sub(1)
+                            .ok_or("Unexpected closing parenthesis")?
+                    }
+                    out.push(symbol.into());
+                }
+            }
+            operand = precedence(symbol) > 0 || symbol == "(";
+            first = false;
+            s = &s[n..];
         }
-        out.push(s[..n].to_string());
-        s = &s[n..];
+    }
+    for _ in lists {
+        out.extend([")".into(), ")".into()]);
     }
     Ok(out)
 }
 fn precedence(s: &str) -> u8 {
     match s {
-        "\\/" => 1,
+        "\\/" => 2,
         "/\\" => 2,
         "\\in" | "=" | "/=" | "<" | ">" | "<=" | ">=" => 3,
         ".." => 4,
-        "+" | "-" => 5,
-        "*" => 6,
+        "+" => 5,
+        "-" => 6,
+        "*" => 8,
         _ => 0,
     }
 }
@@ -119,21 +171,29 @@ fn parse(t: &[String], p: &mut usize, min: u8) -> Result<Expr> {
         }
         _ => return Err(format!("Unexpected token {token}")),
     };
+    let mut previous: Option<&str> = None;
     while let Some(op) = t.get(*p) {
         let k = precedence(op);
         if k < min {
             break;
         }
+        if let Some(prev) = previous {
+            if precedence(prev) == k
+                && (prev != op || !matches!(op.as_str(), "/\\" | "\\/" | "+" | "-" | "*"))
+            {
+                return Err(format!(
+                    "Precedence conflict between {prev} and {op}; use parentheses"
+                ));
+            }
+        }
+        previous = Some(op.as_str());
         *p += 1;
         left = Expr::Binary(op.clone(), Box::new(left), Box::new(parse(t, p, k + 1)?));
     }
     Ok(left)
 }
 fn expression(s: &str) -> Result<Expr> {
-    let mut t = tokens(s)?;
-    if matches!(t.first().map(String::as_str), Some("/\\") | Some("\\/")) {
-        t.remove(0);
-    }
+    let t = tokens(s)?;
     let mut p = 0;
     let e = parse(&t, &mut p, 1)?;
     if p != t.len() {
@@ -249,7 +309,7 @@ fn domains(e: &Expr, vars: &[String], state: &State, initial: bool) -> Result<Op
                     name.strip_suffix('\'')
                 };
                 if let Some(i) = target.and_then(|n| vars.iter().position(|v| v == n)) {
-                    if op == "=" || (!initial && op == "\\in") {
+                    if op == "=" || op == "\\in" {
                         bindings.push((i, op, r));
                         continue;
                     }
@@ -291,7 +351,9 @@ fn check(source: &str, input: &Value, limit: usize) -> Result<Value> {
     let mut pending: Option<(String, String)> = None;
     let mut module = false;
     let mut closed = false;
-    for raw in source.lines() {
+    let mut lines = source.lines();
+    let mut remainder = None;
+    while let Some(raw) = remainder.take().or_else(|| lines.next()) {
         let mut quoted = false;
         let mut escaped = false;
         let mut end = raw.len();
@@ -312,6 +374,13 @@ fn check(source: &str, input: &Value, limit: usize) -> Result<Value> {
                 break;
             }
         }
+        let code = raw[..end].trim_end();
+        let prefix = code.trim_end_matches('=');
+        if !prefix.trim().is_empty() && code.len() - prefix.len() >= 4 {
+            remainder = Some(&code[prefix.len()..]);
+            end = prefix.len();
+        }
+        let end_of_code = end;
         let line = raw[..end].trim();
         if line.is_empty() {
             continue;
@@ -357,12 +426,13 @@ fn check(source: &str, input: &Value, limit: usize) -> Result<Value> {
             if !identifier(name.trim()) {
                 return Err("Expected a named definition".into());
             }
-            pending = Some((name.trim().into(), body.into()));
+            let column = raw.len() - raw.trim_start().len() + name.len() + 2;
+            pending = Some((name.trim().into(), format!("{}{body}", " ".repeat(column))));
             continue;
         }
         if let Some((_, s)) = &mut pending {
-            s.push(' ');
-            s.push_str(line);
+            s.push('\n');
+            s.push_str(&raw[..end_of_code]);
             continue;
         }
         if line == "EXTENDS Naturals" || line == "EXTENDS Integers" {
@@ -386,18 +456,37 @@ fn check(source: &str, input: &Value, limit: usize) -> Result<Value> {
     {
         return Err("Declare unique variables".into());
     }
-    let init_domains = domains(
+    let mut initial_terms = vec![];
+    parts(
         defs.get(init_name).ok_or(format!("Define {init_name}"))?,
-        &vars,
-        &vec![],
-        true,
-    )?
-    .ok_or("Init has no initial state")?;
-    let init: State = init_domains
-        .iter()
-        .map(Domain::first)
-        .collect::<Option<_>>()
-        .ok_or("Init has no initial state")?;
+        "\\/",
+        &mut initial_terms,
+    );
+    let mut states = Vec::new();
+    let mut ids = BTreeMap::new();
+    let mut status = "passed";
+    for term in initial_terms {
+        if let Some(choices) = domains(term, &vars, &vec![], true)? {
+            visit_states(&choices, |state| {
+                if !ids.contains_key(state) {
+                    if states.len() >= limit {
+                        status = "limited";
+                        return false;
+                    }
+                    ids.insert(state.clone(), states.len());
+                    states.push(state.clone());
+                }
+                true
+            });
+        }
+        if status == "limited" {
+            break;
+        }
+    }
+    if states.is_empty() {
+        return Err("Init has no initial state".into());
+    }
+    let initial_count = states.len();
     let invariant = input["invariant"].as_str().unwrap_or_else(|| {
         if defs.contains_key("Safety") {
             "Safety"
@@ -430,14 +519,11 @@ fn check(source: &str, input: &Value, limit: usize) -> Result<Value> {
             actions.push(("Next", e))
         }
     }
-    let mut states = vec![init.clone()];
-    let mut ids = BTreeMap::from([(init, 0)]);
-    let mut parents = vec![None];
+    let mut parents = vec![None; initial_count];
     let mut edges = vec![];
     let mut trace = vec![];
-    let mut status = "passed";
     let mut i = 0;
-    'search: while i < states.len() {
+    'search: while status == "passed" && i < states.len() {
         if let Some(inv) = inv {
             if !eval(inv, &vars, &states[i])?.boolean()? {
                 status = "violated";
@@ -489,7 +575,7 @@ fn check(source: &str, input: &Value, limit: usize) -> Result<Value> {
         .map(|state| state.iter().map(Scalar::json).collect())
         .collect();
     Ok(
-        json!({"status":status,"invariant":invariant,"variables":vars,"states":states,"edges":edges,"trace":trace}),
+        json!({"status":status,"invariant":invariant,"initial_count":initial_count,"variables":vars,"states":states,"edges":edges,"trace":trace}),
     )
 }
 thread_local! {static OUTPUT:RefCell<Vec<u8>>=const{RefCell::new(Vec::new())};}
