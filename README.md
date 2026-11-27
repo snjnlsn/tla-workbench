@@ -2,6 +2,8 @@
 
 Edit TLA+ specifications and check safety invariants in your browser. The model checker runs locally in a WebAssembly worker. The editor saves your specifications in browser storage.
 
+[Try TLA+ Workbench in your browser](https://snjnlsn.github.io/tla-workbench/). No sign-in is required.
+
 ## Run locally
 
 Install [mise](https://mise.jdx.dev/getting-started.html) if needed. Run the following commands once to set up this checkout.
