@@ -12,9 +12,10 @@ if (!workspace?.files?.[workspace.active]) workspace = defaults;
 const file = () => workspace.files[workspace.active];
 function persist() { try { localStorage.setItem("tla-workbench-1",JSON.stringify(workspace)); } catch {} }
 let worker, timer, result, selected = 0;
+const visitedPath=[];
 function stop() {clearTimeout(timer);worker?.terminate();worker=null;$("run").disabled=false}
 function invalidate() {
-  stop();result=null;$("summary").textContent="Run the model to check this specification.";
+  stop();result=null;visitedPath.length=0;$("steps").hidden=true;$("summary").textContent="Run the model to check this specification.";
   $("graphcount").textContent="Ready";$("canvas").textContent="Run the model to explore its states.";
   $("inspector").textContent="State inspector";$("trace").replaceChildren();
 }
@@ -45,7 +46,13 @@ function run(){
   const finish=data=>{stop();result=data;selected=data.trace?.at(-1)??0;renderResult(performance.now()-start)};
   worker.onmessage=e=>finish(e.data);worker.onerror=e=>finish({status:"error",error:e.message||"The checker could not start."});
   timer=setTimeout(()=>finish({status:"limited",error:"Execution time limit reached."}),15000);
-  worker.postMessage(file());
+  try {
+    const model = file();
+    const options = model.configText === undefined ? {} : readConfig(model.configText);
+    worker.postMessage({...model, ...options});
+  } catch (error) {
+    finish({status:"error", error:error.message});
+  }
 }
 $("run").onclick=run;document.addEventListener("keydown",e=>{if((e.metaKey||e.ctrlKey)&&e.key==="Enter"&&!$("dialog").open){e.preventDefault();run()}});
 function renderResult(ms){
@@ -57,7 +64,15 @@ function renderResult(ms){
   drawGraph();
   if(r.trace.length){$("trace").append("Counterexample ");for(const id of r.trace){const b=document.createElement("button");b.textContent="S"+id;b.onclick=()=>selectState(id);$("trace").append(b)}}
 }
-function selectState(i){selected=i;drawGraph()}
+function selectState(i){visitedPath.length=0;selected=i;drawGraph()}
+$("stepState").onclick=()=>{
+  visitedPath.push(selected);
+  selected=Number($("successors").value);
+  drawGraph();
+};
+$("backState").onclick=()=>{
+  if(visitedPath.length){selected=visitedPath.pop();drawGraph()}
+};
 function drawGraph(){
   const {states,edges,variables,trace}=result,total=states.length;
   const ids=Array.from({length:Math.min(total,12)},(_,i)=>i);
@@ -79,12 +94,48 @@ function drawGraph(){
   }
   $("canvas").innerHTML=svg+"</svg>";
   for(const node of $("canvas").querySelectorAll(".node")){node.onclick=()=>selectState(+node.dataset.id);node.onkeydown=e=>{if(["Enter"," "].includes(e.key)){e.preventDefault();node.click();$("canvas").querySelector('[data-id="'+selected+'"]').focus()}}}
-  $("inspector").innerHTML='<b>S'+selected+'</b> '+escape(variables.map((v,i)=>v+" = "+JSON.stringify(states[selected][i])).join(", "))+(selected===0?" · Initial state":"");
+  $("inspector").innerHTML='<b>S'+selected+'</b> '+escape(variables.map((v,i)=>v+" = "+JSON.stringify(states[selected][i])).join(", "))+(selected<result.initial_count?" · Initial state":"");
+  const options=edges.filter(([from])=>from===selected).map(([,to,action])=>new Option(action+" → S"+to,String(to)));
+  $("steps").hidden=false;
+  $("backState").disabled=!visitedPath.length;
+  $("stepState").disabled=!options.length;
+  $("successors").disabled=!options.length;
+  $("successors").replaceChildren(...(options.length?options:[new Option("No recorded transition","")]));
+
 }
 function dialog(html){$("dialogbody").innerHTML=html;$("dialog").showModal()}
+function downloadText(name, text) {
+  const link=document.createElement("a");
+  link.href=URL.createObjectURL(new Blob([text],{type:"text/plain"}));
+  link.download=name;
+  link.click();
+  setTimeout(()=>URL.revokeObjectURL(link.href),1000);
+}
 $("settings").onclick=()=>{
-  dialog('<h2>Model configuration</h2><form id="config"><label>Invariant name (optional)<input id="inv" pattern="[A-Za-z][A-Za-z0-9_]*"></label><label>State limit<input id="limit" type="number" min="1" max="10000" required></label><label><input id="deadlock" type="checkbox" style="width:auto"> Check deadlocks</label><button class="primary">Apply and run</button></form>');
-  $("deadlock").checked=!!file().deadlock;$("inv").value=file().invariant??result?.invariant??"";$("limit").value=file().limit;$("config").onsubmit=e=>{e.preventDefault();file().deadlock=$("deadlock").checked;file().invariant=$("inv").value;file().limit=+$("limit").value;persist();$("dialog").close();run()};
+  const model=file();
+  const raw=model.configText!==undefined;
+  const fields=raw
+    ? '<label>Configuration file<textarea id="cfgText" rows="10" spellcheck="false"></textarea></label><button id="saveCfg" type="button">Download .cfg</button>'
+    : '<label>Invariant name (optional)<input id="inv" pattern="[A-Za-z][A-Za-z0-9_]*"></label><label><input id="deadlock" type="checkbox" style="width:auto"> Check deadlocks</label>';
+  dialog('<h2>Model configuration</h2><form id="config">'+fields+'<label>State limit<input id="limit" type="number" min="1" max="10000" required></label><button class="primary">Apply and run</button></form>');
+  if(raw){
+    $("cfgText").value=model.configText;
+    $("saveCfg").onclick=()=>downloadText(model.name+".cfg",$("cfgText").value);
+  } else {
+    $("deadlock").checked=!!model.deadlock;
+    $("inv").value=model.invariant??result?.invariant??"";
+  }
+  $("limit").value=model.limit;
+  $("config").onsubmit=e=>{
+    e.preventDefault();
+    if(raw) model.configText=$("cfgText").value;
+    else {
+      model.deadlock=$("deadlock").checked;
+      model.invariant=$("inv").value;
+    }
+    model.limit=+$("limit").value;
+    persist();$("dialog").close();run();
+  };
 };
 $("guide").onclick=()=>dialog('<h2>Quick reference</h2><p>This checker explores a finite-state subset of TLA+. Use it to check safety invariants.</p><p>Declare variables with <code>VARIABLE</code> or <code>VARIABLES</code>. In <code>Init</code>, assign an integer, string, or Boolean value to each variable.</p><p>Define each action with guards and one primed assignment per variable. Use <code>x&#39; = x</code> to keep a value. Join named actions in <code>Next</code> with <code>\\\\/</code>.</p><p>Use a primed membership constraint such as <code>i&#39; &#92;in 0..10</code> for integer choices. Import a .tla file together with its matching .cfg to use its model settings. Use integer arithmetic, comparisons, parentheses, conjunction and disjunction. Choose the invariant and state limit in Configuration.</p><p>Open <b>Overflow.tla</b> to inspect a failing trace. Edits are saved in this browser.</p>'.replace("x\\'","x'"));
 function addFile(name,source,settings={}){workspace.files.push({name,source,limit:10000,...settings});openFile(workspace.files.length-1)}
@@ -99,8 +150,8 @@ $("upload").onchange=async event=>{
     if(!spec || files.length!==1+Number(!!config))throw Error("Select one .tla file and optionally its matching .cfg file.");
     const name=spec.name.replace(/\.tla$/i,"");
     if(config && config.name.replace(/\.cfg$/i,"")!==name)throw Error("Select a configuration with the same base name as the module.");
-    addFile(name,await spec.text(),config?readConfig(await config.text()):{});
+    addFile(name,await spec.text(),config?{configText:await config.text()}:{});
   } catch(error){dialog("<h2>Import error</h2><p>"+escape(error.message)+"</p>")}
 };
-$("download").onclick=()=>{const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([file().source],{type:"text/plain"}));a.download=file().name+".tla";a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)};
+$("download").onclick=()=>downloadText(file().name+".tla",file().source);
 openFile(workspace.active);

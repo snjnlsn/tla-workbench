@@ -18,3 +18,7 @@ run = "python3 scripts/build.py"
 description = "Build the checker and test the WebAssembly module"
 depends = ["build"]
 run = "node --test tests/checker.mjs"
+
+[tasks.parity]
+description = "Compare the shipped WebAssembly checker with reference TLC"
+run = "node --test tests/checker.mjs tests/parity/parser.mjs tests/parity/reference.mjs"
