@@ -1,0 +1,22 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+const {instance:{exports:wasm}}=await WebAssembly.instantiate(await readFile(new URL('../dist/checker.wasm',import.meta.url)));
+const model = "---- MODULE Test ----\nVARIABLES x, y\nInit == x = 0 /\\ y = 1\nStep == x < 2 /\\ x' = x + 1 /\\ y' = x\nNext == Step\nSafety == y <= 1\n====";
+function check(source,limit=100){
+  const bytes=Buffer.from(JSON.stringify({source,limit,invariant:"Safety"}));
+  const ptr=wasm.reserve(bytes.length);
+  new Uint8Array(wasm.memory.buffer,ptr,bytes.length).set(bytes);
+  const length=wasm.run(ptr,bytes.length);
+  return JSON.parse(Buffer.from(wasm.memory.buffer,wasm.output(),length).toString());
+}
+test('simultaneous assignments and terminal states',()=>{
+  const result=check(model);
+  assert.equal(result.status,'passed');
+  assert.deepEqual(result.states,[[0,1],[1,0],[2,1]]);
+});
+test('returns a path to the violation',()=>assert.deepEqual(check(model.replace('y <= 1','x < 2')).trace,[0,1,2]));
+test('state limit is inconclusive',()=>assert.equal(check(model,2).status,'limited'));
+test('invalid syntax and missing assignments are errors',()=>{
+  for(const source of [model.replace("y' = x","TRUE"),model.replace('y <= 1','[]FALSE')]) assert.equal(check(source).status,'error');
+});

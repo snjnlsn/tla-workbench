@@ -1,0 +1,20 @@
+[env]
+_.file = ".env"
+
+[tools]
+rust = { version = "1.86.0", targets = ["wasm32-unknown-unknown"] }
+node = "25.8.2"
+python = "3.14.6"
+
+[tasks.serve]
+description = "Serve the workbench at http://127.0.0.1:8080"
+run = "python3 -m http.server 8080 --bind 127.0.0.1 --directory dist"
+
+[tasks.build]
+description = "Compile the Rust checker for the browser"
+run = "python3 scripts/build.py"
+
+[tasks.test]
+description = "Build the checker and test the WebAssembly module"
+depends = ["build"]
+run = "node --test tests/checker.mjs"
