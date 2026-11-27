@@ -1,4 +1,5 @@
 //! Check finite-state models and return a graph of reachable states.
+mod simulator;
 use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -462,31 +463,6 @@ fn check(source: &str, input: &Value, limit: usize) -> Result<Value> {
         "\\/",
         &mut initial_terms,
     );
-    let mut states = Vec::new();
-    let mut ids = BTreeMap::new();
-    let mut status = "passed";
-    for term in initial_terms {
-        if let Some(choices) = domains(term, &vars, &vec![], true)? {
-            visit_states(&choices, |state| {
-                if !ids.contains_key(state) {
-                    if states.len() >= limit {
-                        status = "limited";
-                        return false;
-                    }
-                    ids.insert(state.clone(), states.len());
-                    states.push(state.clone());
-                }
-                true
-            });
-        }
-        if status == "limited" {
-            break;
-        }
-    }
-    if states.is_empty() {
-        return Err("Init has no initial state".into());
-    }
-    let initial_count = states.len();
     let invariant = input["invariant"].as_str().unwrap_or_else(|| {
         if defs.contains_key("Safety") {
             "Safety"
@@ -519,6 +495,34 @@ fn check(source: &str, input: &Value, limit: usize) -> Result<Value> {
             actions.push(("Next", e))
         }
     }
+    if input["mode"] == "simulate" {
+        return simulator::step(input, &vars, &initial_terms, &actions, inv);
+    }
+    let mut states = Vec::new();
+    let mut ids = BTreeMap::new();
+    let mut status = "passed";
+    for term in initial_terms {
+        if let Some(choices) = domains(term, &vars, &vec![], true)? {
+            visit_states(&choices, |state| {
+                if !ids.contains_key(state) {
+                    if states.len() >= limit {
+                        status = "limited";
+                        return false;
+                    }
+                    ids.insert(state.clone(), states.len());
+                    states.push(state.clone());
+                }
+                true
+            });
+        }
+        if status == "limited" {
+            break;
+        }
+    }
+    if states.is_empty() {
+        return Err("Init has no initial state".into());
+    }
+    let initial_count = states.len();
     let mut parents = vec![None; initial_count];
     let mut edges = vec![];
     let mut trace = vec![];

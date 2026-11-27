@@ -1,20 +1,52 @@
+import {loadWorkspace,assembleModels,githubProject} from "./projects.mjs";
+import {simulator} from "./simulator.mjs";
 import {readConfig} from "./config.mjs";
 const $ = id => document.getElementById(id);
 const escape = value => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const moduleText = (name, body) => "---- MODULE " + name + " ----\nEXTENDS Integers\n\n" + body + "\n====\n";
-const counter = moduleText("Counter", "VARIABLE count\n\nInit == count = 0\n\nIncrement == /\\ count < 4\n             /\\ count' = count + 1\n\nReset == /\\ count = 4\n         /\\ count' = 0\n\nNext == Increment \\/ Reset\n\nSafety == count >= 0 /\\ count <= 4");
-const toggle = moduleText("Toggle", "VARIABLE bit\n\nInit == bit = 0\n\nFlip == bit' = 1 - bit\n\nNext == Flip\n\nSafety == bit = 0 \\/ bit = 1");
-const overflow = counter.replace("MODULE Counter","MODULE Overflow").replace("count < 4","count < 5");
-const defaults = {files:[["Counter",counter],["Toggle",toggle],["Overflow",overflow]].map(([name,source])=>({name,source,invariant:"Safety",limit:1000})),active:0};
-let workspace;
-try { workspace = JSON.parse(localStorage.getItem("tla-workbench-1")); } catch {}
-if (!workspace?.files?.[workspace.active]) workspace = defaults;
-const file = () => workspace.files[workspace.active];
-function persist() { try { localStorage.setItem("tla-workbench-1",JSON.stringify(workspace)); } catch {} }
+const workspace=loadWorkspace(localStorage);
+const project=()=>workspace.projects[workspace.active];
+const file=()=>project().files[project().active];
+function persist(){
+  try {
+    localStorage.setItem("tla-projects-1",JSON.stringify(workspace));
+    $("storageNotice").hidden=true;
+  } catch {
+    $("storageNotice").textContent="Browser storage is full or unavailable. This session’s changes could not be saved.";
+    $("storageNotice").hidden=false;
+  }
+}
+function setView(graph){
+  $("runnerView").setAttribute("aria-pressed",String(!graph));
+  $("graphView").setAttribute("aria-pressed",String(graph));
+  $("simulator").hidden=graph;$("graphPane").hidden=!graph;
+  if(graph && result?.states) drawGraph();
+  if(!graph && result?.states) $("graphcount").textContent=result.states.length+" states";
+}
+$("runnerView").onclick=()=>setView(false);
+$("graphView").onclick=()=>setView(true);
+function modelOptions(){
+  const model=file();
+  const config=model.configText===undefined?{}:readConfig(model.configText);
+  return {...model,...config};
+}
+const simWorkers=new Set();
+const runner=simulator($("simulator"),input=>{
+  const options=modelOptions();
+  return new Promise(resolve=>{
+    const w=new Worker("./worker.js");
+    const finish=data=>{clearTimeout(timeout);simWorkers.delete(cancel);w.terminate();resolve(data)};
+    const cancel=()=>finish({error:"Run superseded."});
+    const timeout=setTimeout(()=>finish({error:"Transition timed out."}),15000);
+    simWorkers.add(cancel);
+    w.onmessage=event=>finish(event.data);w.onerror=event=>finish({error:event.message||"Checker failed."});
+    w.postMessage({...options,...input});
+  });
+});
 let worker, timer, result, selected = 0;
 const visitedPath=[];
 function stop() {clearTimeout(timer);worker?.terminate();worker=null;$("run").disabled=false}
 function invalidate() {
+  runner.clear("Run the model to try a transition.");for(const cancel of simWorkers)cancel();
   stop();result=null;visitedPath.length=0;$("steps").hidden=true;$("summary").textContent="Run the model to check this specification.";
   $("graphcount").textContent="Ready";$("canvas").textContent="Run the model to explore its states.";
   $("inspector").textContent="State inspector";$("trace").replaceChildren();
@@ -34,22 +66,23 @@ function paint() {
 function syncScroll(){ $("paint").scrollTop=$("numbers").scrollTop=$("source").scrollTop;$("paint").scrollLeft=$("source").scrollLeft; }
 function position(){const lines=$("source").value.slice(0,$("source").selectionStart).split("\n");$("position").textContent="Ln "+lines.length+" · Col "+(lines.at(-1).length+1)}
 function openFile(i){
-  workspace.active=i;persist();invalidate();
-  $("files").replaceChildren(...workspace.files.map((f,j)=>{const b=document.createElement("button");b.textContent=f.name+".tla";b.className=i===j?"active":"";b.onclick=()=>openFile(j);return b}));
+  project().active=i;persist();invalidate();setView(false);
+  $("projectList").replaceChildren(...workspace.projects.map((p,j)=>new Option(p.name,String(j))));
+  $("projectList").value=String(workspace.active);
+  $("projectCrumb").textContent=project().name;
+  $("files").replaceChildren(...project().files.map((f,j)=>{const b=document.createElement("button");b.textContent=f.name+".tla";b.className=i===j?"active":"";b.onclick=()=>openFile(j);return b}));
   $("source").value=file().source;$("filename").textContent=file().name+".tla";paint();run();
 }
 $("source").oninput=()=>{file().source=$("source").value;persist();paint();invalidate()};
 $("source").onscroll=syncScroll;$("source").onselect=position;$("source").onkeyup=position;$("source").onclick=position;
 function run(){
-  stop();invalidate();$("summary").textContent="Checking reachable states…";$("run").disabled=true;
+  invalidate();runner.start();$("summary").textContent="Checking reachable states…";$("run").disabled=true;
   const start=performance.now();worker=new Worker("./worker.js");
   const finish=data=>{stop();result=data;selected=data.trace?.at(-1)??0;renderResult(performance.now()-start)};
   worker.onmessage=e=>finish(e.data);worker.onerror=e=>finish({status:"error",error:e.message||"The checker could not start."});
   timer=setTimeout(()=>finish({status:"limited",error:"Execution time limit reached."}),15000);
   try {
-    const model = file();
-    const options = model.configText === undefined ? {} : readConfig(model.configText);
-    worker.postMessage({...model, ...options});
+    worker.postMessage(modelOptions());
   } catch (error) {
     finish({status:"error", error:error.message});
   }
@@ -61,8 +94,8 @@ function renderResult(ms){
   const metrics=r.states?[["States",r.states.length],["Transitions",r.edges.length],["Elapsed",Math.round(ms)+" ms"]]:[];
   $("summary").innerHTML='<div class="status"><span class="stamp '+(r.status==="passed"?"":"bad")+'">'+(r.status==="passed"?"✓":"!")+'</span><div><strong>'+titles[r.status]+'</strong><small>'+escape(detail)+'</small></div></div>'+metrics.map(([label,value])=>'<div class="metric"><small>'+label+'</small><b>'+value+'</b></div>').join("");
   if(!r.states){$("canvas").textContent="No state graph available.";$("graphcount").textContent="—";return}
-  drawGraph();
-  if(r.trace.length){$("trace").append("Counterexample ");for(const id of r.trace){const b=document.createElement("button");b.textContent="S"+id;b.onclick=()=>selectState(id);$("trace").append(b)}}
+  if(!$("graphPane").hidden) drawGraph();else $("graphcount").textContent=r.states.length+" states";
+  if(r.trace.length){$("trace").append("Counterexample ");for(const id of r.trace){const b=document.createElement("button");b.textContent="S"+id;b.onclick=()=>{setView(true);selectState(id)};$("trace").append(b)}}
 }
 function selectState(i){visitedPath.length=0;selected=i;drawGraph()}
 $("stepState").onclick=()=>{
@@ -137,21 +170,64 @@ $("settings").onclick=()=>{
     persist();$("dialog").close();run();
   };
 };
-$("guide").onclick=()=>dialog('<h2>Quick reference</h2><p>This checker explores a finite-state subset of TLA+. Use it to check safety invariants.</p><p>Declare variables with <code>VARIABLE</code> or <code>VARIABLES</code>. In <code>Init</code>, assign an integer, string, or Boolean value to each variable.</p><p>Define each action with guards and one primed assignment per variable. Use <code>x&#39; = x</code> to keep a value. Join named actions in <code>Next</code> with <code>\\\\/</code>.</p><p>Use a primed membership constraint such as <code>i&#39; &#92;in 0..10</code> for integer choices. Import a .tla file together with its matching .cfg to use its model settings. Use integer arithmetic, comparisons, parentheses, conjunction and disjunction. Choose the invariant and state limit in Configuration.</p><p>Open <b>Overflow.tla</b> to inspect a failing trace. Edits are saved in this browser.</p>'.replace("x\\'","x'"));
-function addFile(name,source,settings={}){workspace.files.push({name,source,limit:10000,...settings});openFile(workspace.files.length-1)}
-$("new").onclick=()=>{dialog('<h2>New specification</h2><form id="create"><label>Module name<input id="name" required pattern="[A-Za-z][A-Za-z0-9_]*" autofocus></label><button class="primary">Create specification</button></form>');$("create").onsubmit=e=>{e.preventDefault();const name=$("name").value;$("dialog").close();addFile(name,counter.replace("MODULE Counter","MODULE "+name))}};
-$("upload").onchange=async event=>{
-  const files=Array.from(event.target.files);
-  event.target.value="";
+$("guide").onclick=()=>dialog('<h2>Quick reference</h2><p>This checker explores a finite-state subset of TLA+. Use it to check safety invariants.</p><p>Declare variables with <code>VARIABLE</code> or <code>VARIABLES</code>. In <code>Init</code>, assign an integer, string, or Boolean value to each variable.</p><p>Define each action with guards and one primed assignment per variable. Use <code>x&#39; = x</code> to keep a value. Join named actions in <code>Next</code> with <code>\\\\/</code>.</p><p>Use a primed membership constraint such as <code>i&#39; &#92;in 0..10</code> for integer choices. Import a .tla file together with its matching .cfg to use its model settings. Use integer arithmetic, comparisons, parentheses, conjunction and disjunction. Choose the invariant and state limit in Configuration.</p><p>In the Seat reservations project, open <b>SadPath.tla</b> and reserve 4 seats to see a safety violation. Edits are saved in this browser.</p>'.replace("x\\'","x'"));
+function blankModel(name){
+  return {name,limit:10000,source:["---- MODULE "+name+" ----","EXTENDS Integers","VARIABLE count","Init == count = 0","Next == count' = count","Safety == count = 0","====",""].join("\n")};
+}
+function addProject(p){
+  const base=p.name;
+  for(let n=2;workspace.projects.some(other=>other.name===p.name);n++)p.name=base+" ("+n+")";
+  workspace.active=workspace.projects.push(p)-1;openFile(p.active);
+}
+$("projectList").onchange=e=>{workspace.active=Number(e.target.value);openFile(project().active)};
+function createItem(isProject){
+  const kind=isProject?"project":"model";
+  dialog('<h2>New '+kind+'</h2><form id="create"><label>Name<input id="itemName" required autofocus></label><button class="primary">Create '+kind+'</button></form>');
+  if(!isProject)$("itemName").pattern="[A-Za-z][A-Za-z0-9_]*";
+  $("create").onsubmit=e=>{
+    e.preventDefault();
+    const name=$("itemName").value.trim();
+    if(!name)return;
+    if(!isProject && project().files.some(f=>f.name===name)){
+      $("itemName").setCustomValidity("A model with this name already exists.");
+      $("itemName").reportValidity();$("itemName").oninput=()=>$("itemName").setCustomValidity("");return;
+    }
+    $("dialog").close();
+    if(isProject)addProject({name,active:0,files:[blankModel("Main")]});
+    else openFile(project().files.push(blankModel(name))-1);
+  };
+}
+$("newProject").onclick=()=>createItem(true);
+$("new").onclick=()=>createItem(false);
+$("upload").onchange=async e=>{
+  const files=Array.from(e.target.files);e.target.value="";
   if(!files.length)return;
-  try {
-    const spec=files.find(f=>/\.tla$/i.test(f.name));
-    const config=files.find(f=>/\.cfg$/i.test(f.name));
-    if(!spec || files.length!==1+Number(!!config))throw Error("Select one .tla file and optionally its matching .cfg file.");
-    const name=spec.name.replace(/\.tla$/i,"");
-    if(config && config.name.replace(/\.cfg$/i,"")!==name)throw Error("Select a configuration with the same base name as the module.");
-    addFile(name,await spec.text(),config?{configText:await config.text()}:{});
-  } catch(error){dialog("<h2>Import error</h2><p>"+escape(error.message)+"</p>")}
+  const target=project();
+  try{
+    const entries=await Promise.all(files.map(async f=>({path:f.name,text:await f.text()})));
+    for(const entry of entries.filter(e=>/\.cfg$/i.test(e.path))){
+      if(!entries.some(e=>/\.tla$/i.test(e.path)&&e.path.slice(0,-4)===entry.path.slice(0,-4)))
+        throw Error("Select the matching .tla file for "+entry.path+".");
+    }
+    const models=assembleModels(entries);
+    if(models.some(m=>target.files.some(f=>f.name===m.name)))throw Error("A model with this name already exists in this project.");
+    const first=target.files.length;target.files.push(...models);
+    if(project()===target)openFile(first);else persist();
+  }catch(err){dialog("<h2>Import error</h2><p>"+escape(err.message)+"</p>")}
+};
+$("github").onclick=()=>{
+  dialog('<h2>Import GitHub project</h2><form id="repoForm"><label>Public repository URL<input id="repoURL" type="url" required placeholder="https://github.com/owner/repo" autofocus></label><p>Import models and matching configurations from the repository’s top-level <code>/tla</code> directory.</p><button class="primary">Import project</button><p id="repoStatus" aria-live="polite"></p></form>');
+  const controller=new AbortController();
+  $("dialog").addEventListener("close",()=>controller.abort(),{once:true});
+  $("repoForm").onsubmit=async e=>{
+    e.preventDefault();const submit=e.target.querySelector("button");
+    submit.disabled=true;$("repoStatus").textContent="Reading repository…";
+    try{
+      const imported=await githubProject($("repoURL").value,controller.signal);
+      if(!controller.signal.aborted){$("dialog").close();addProject(imported)}
+    }catch(err){if(!controller.signal.aborted)$("repoStatus").textContent=err.message}
+    finally{submit.disabled=false}
+  };
 };
 $("download").onclick=()=>downloadText(file().name+".tla",file().source);
-openFile(workspace.active);
+openFile(project().active);

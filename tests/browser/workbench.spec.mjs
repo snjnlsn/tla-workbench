@@ -6,6 +6,7 @@ test('import, configure, run, inspect a counterexample, and reopen a model',asyn
   const summary = page.getByRole('status');
   await expect(summary).toContainText('Exploration complete');
   await expect(summary).toContainText('2003');
+  await page.getByRole('button',{name:'State graph',exact:true}).click();
   const choices=page.getByLabel('Enabled transitions');
   await choices.selectOption({label:'Pick → S1001'});
   await page.getByRole('button',{name:'Step',exact:true}).click();
@@ -35,4 +36,76 @@ test('edit and rerun after an ambiguous expression',async({page})=>{
   await editor.fill((await editor.inputValue()).replace('FALSE /\\ FALSE','(FALSE /\\ FALSE)'));
   await page.getByRole('button',{name:/Run model/}).click();
   await expect(page.getByRole('status')).toContainText('Invariant holds');
+});
+
+test('try values on both example paths and retain the graph picker',async({page})=>{
+  await page.goto('./');
+  const sim=page.locator('#simulator');
+  await expect(page.getByLabel('Active project')).toHaveValue('0');
+  await expect(page.locator('#projectList option')).toHaveCount(1);
+  await expect(sim.getByRole('combobox',{name:'Action'})).toHaveValue('0');
+  const seats=sim.getByRole('textbox',{name:/seats′/});
+  await seats.fill('4');
+  await sim.getByRole('button',{name:'Try transition'}).click();
+  await expect(sim).toContainText('seats must be an integer from 1 to 3');
+  await expect(sim.locator('dd').first()).toHaveText('"open"');
+  await seats.fill('2');
+  await sim.getByRole('button',{name:'Try transition'}).click();
+  await expect(sim.locator('dd').last()).toHaveText('2');
+  await expect(seats).toHaveCount(0);
+  await sim.getByRole('button',{name:'Back'}).click();
+  await expect(sim.locator('dd').last()).toHaveText('0');
+  await page.getByRole('button',{name:/SadPath.tla/}).click();
+  await expect(page.getByRole('status')).toContainText('Invariant violated');
+  await expect(sim.locator('dd').first()).toHaveText('"open"');
+  await seats.fill('4');
+  await sim.getByRole('button',{name:'Try transition'}).click();
+  await expect(sim).toContainText('This state violates the invariant');
+  await page.getByRole('button',{name:'State graph',exact:true}).click();
+  await expect(page.getByLabel('Reachable state graph')).toBeVisible();
+});
+
+test('projects keep their models separate and import a public /tla tree atomically',async({page})=>{
+  await page.goto('./');
+  await page.getByRole('button',{name:'New project'}).click();
+  await page.getByLabel('Name',{exact:true}).fill('Workshop');
+  await page.getByRole('button',{name:'Create project'}).click();
+  await page.locator('#upload').setInputFiles(['tla/HappyPath.tla','tla/SadPath.tla']);
+  await expect(page.locator('#files button')).toHaveCount(3);
+  const endpoint='https://api.github.com/repos/samples/booking/git/';
+  await page.route(endpoint+'**',async route=>{
+    const key=route.request().url().slice(endpoint.length);
+    const replies={
+      'trees/HEAD':{tree:[{type:'tree',path:'tla',sha:'tree'}]},
+      'trees/tree?recursive=1':{tree:[
+        {type:'blob',path:'nested/Booking.tla',sha:'model'},
+        {type:'blob',path:'nested/Booking.cfg',sha:'config'},
+        {type:'blob',path:'README.md',sha:'ignored'},
+      ]},
+    };
+    if(key in replies)return route.fulfill({json:replies[key]});
+    if(key==='blobs/model')return route.fulfill({body:"---- MODULE Booking ----\nVARIABLE x\nInit == x = 0\nNext == x' = x\n===="});
+    if(key==='blobs/config')return route.fulfill({body:'INIT Init\nNEXT Next\nCHECK_DEADLOCK FALSE'});
+    throw Error(key);
+  });
+  await page.getByRole('button',{name:'Import from GitHub'}).click();
+  await page.getByLabel('Public repository URL').fill('https://github.com/samples/booking');
+  await page.getByRole('button',{name:'Import project',exact:true}).click();
+  await expect(page.locator('#projectCrumb')).toHaveText('samples/booking');
+  await expect(page.locator('#files button')).toHaveCount(1);
+  await expect(page.locator('#filename')).toHaveText('nested/Booking.tla');
+  await expect(page.getByRole('status')).toContainText('Exploration complete');
+  await page.reload();
+  await expect(page.locator('#projectCrumb')).toHaveText('samples/booking');
+  await page.getByLabel('Active project').selectOption({label:'Workshop'});
+  await expect(page.locator('#files button')).toHaveCount(3);
+});
+
+test('previous workspaces survive migration',async({page})=>{
+  await page.addInitScript(()=>localStorage.setItem('tla-workbench-1',JSON.stringify({active:0,files:[
+    {name:'Saved',source:"---- MODULE Saved ----\nVARIABLE x\nInit == x = 7\nNext == x' = x\n====",limit:10}]})));
+  await page.goto('./');
+  await expect(page.locator('#projectCrumb')).toHaveText('Previous workspace');
+  await expect(page.locator('#filename')).toHaveText('Saved.tla');
+  await expect(page.locator('#simulator dd')).toHaveText('7');
 });

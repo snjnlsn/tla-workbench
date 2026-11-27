@@ -50,3 +50,16 @@ test('empty intervals disable an action and large intervals stop at the limit',(
 test('unsupported configuration directives cannot silently drop a property',()=>{
   assert.throws(()=>readConfig(cfg+"\nPROPERTY Progress"));
 });
+
+test('simulator validates exact values beyond the search limit',()=>{
+  const sim=(args)=>check(choiceModel.replace('1..2','1..9223372036854775807'),1,
+    {...readConfig(cfg),mode:'simulate',...args});
+  const init=sim({});
+  assert.deepEqual(init.current,['"ready"','0','0']);
+  const base={current:init.current,action:0};
+  assert.equal(sim({...base,candidate:['"done"','9223372036854775808','1']}).status,'error');
+  assert.equal(sim({...base,candidate:['"done"','9','3']}).status,'error');
+  const valid=sim({...base,candidate:['"done"','9223372036854775807','1']});
+  assert.deepEqual(valid.current,['"done"','9223372036854775807','1']);
+  assert.deepEqual(valid.actions,[]);
+});
