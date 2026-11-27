@@ -20,7 +20,7 @@ Start the server from the project directory.
 mise run serve
 ```
 
-Open [the workbench](http://127.0.0.1:8080). In **Seat reservations**, open **HappyPath.tla** and reserve one to three seats. In **SadPath.tla**, reserve four seats to reach a state that violates Safety. Press Ctrl+C in the terminal to stop the server.
+Open [the workbench](http://127.0.0.1:8080). In **Seat reservations**, open **HappyPath.tla** and try **Reserve** with four seats. The checker rejects the input because Reserve accepts one to three seats. The state and history stay the same. Try two seats, then apply **Confirm**. Expand each entry under **Applied transitions** to inspect the values before and after the step. Press Ctrl+C in the terminal to stop the server.
 
 ## Projects and state exploration
 

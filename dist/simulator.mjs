@@ -44,9 +44,11 @@ export function simulator(container, request) {
     if(history.length)controls.append(button('Back',()=>{
       generation++;const prior=history.pop();view=prior.view;selection=prior.selection;render();
     }));
-    controls.append(button('Reset',()=>{
+    const reset=button('Reset',()=>{
       generation++;history=[];view=initial;selection=0;render();
-    }));
+    });
+    reset.className='resetTransition';
+    controls.append(reset);
     top.append(controls);
     const values=document.createElement('dl');values.className='stateValues';
     variables.forEach((v,i)=>values.append(section('dt',v),section('dd',current[i])));
@@ -58,6 +60,25 @@ export function simulator(container, request) {
     }
     const fieldset=document.createElement('fieldset');
     const form=document.createElement('form');form.append(fieldset);container.append(form);
+    if(history.length){
+      const log=document.createElement('section');
+      log.className='transitionHistory';
+      log.append(section('h3','Applied transitions'));
+      for(const [i,step] of history.entries()){
+        const details=document.createElement('details');
+        details.open=step.open;
+        details.ontoggle=()=>{step.open=details.open};
+        details.append(section('summary',(i+1)+'. '+step.action));
+        const changes=document.createElement('ul');
+        variables.forEach((name,j)=>{
+          const before=step.view.current[j], after=step.after[j];
+          changes.append(section('li',name+' '+before+(before===after?' (unchanged)':' → '+after)));
+        });
+        details.append(changes);
+        log.append(details);
+      }
+      container.append(log);
+    }
     const feedback=section('p',message);feedback.setAttribute('aria-live','polite');
     feedback.className='accepted';
     if(!actions.length){fieldset.append(section('p','No enabled actions.'));fieldset.append(feedback);return}
@@ -91,7 +112,8 @@ export function simulator(container, request) {
         const next=await request({mode:'simulate',current,candidate,action:action.index});
         if(token!==generation)return;
         if(next.error)throw Error(next.error);
-        history.push({view,selection});view=next;selection=0;render('Transition accepted.');
+        history.push({view,selection,action:select.selectedOptions[0].text,after:next.current,open:false});
+        view=next;selection=0;render('Transition accepted.');
       }catch(error){
         if(token!==generation)return;
         feedback.textContent=error.message;feedback.className='invalid';fieldset.disabled=false;
