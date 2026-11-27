@@ -91,6 +91,12 @@ test('projects keep their models separate and import a public /tla tree atomical
   await page.getByRole('button',{name:'Create project'}).click();
   await page.locator('#upload').setInputFiles(['tla/HappyPath.tla','example_tla/Test.tla']);
   await expect(page.locator('#files button')).toHaveCount(3);
+  const chooser=page.waitForEvent('filechooser');
+  await page.getByRole('button',{name:'Add .tla / .cfg files'}).click();
+  await (await chooser).setFiles('example_tla/Test.cfg');
+  await expect(page.locator('#filename')).toHaveText('Test.tla');
+  await expect(page.getByRole('status')).toContainText('2003');
+  await expect(page.locator('#files button')).toHaveCount(3);
   const endpoint='https://api.github.com/repos/samples/booking/git/';
   await page.route(endpoint+'**',async route=>{
     const key=route.request().url().slice(endpoint.length);
@@ -107,9 +113,10 @@ test('projects keep their models separate and import a public /tla tree atomical
     if(key==='blobs/config')return route.fulfill({body:'INIT Init\nNEXT Next\nCHECK_DEADLOCK FALSE'});
     throw Error(key);
   });
-  await page.getByRole('button',{name:'Import from GitHub'}).click();
+  await page.getByRole('button',{name:'New project'}).click();
+  await page.getByRole('button',{name:'Create from GitHub…'}).click();
   await page.getByLabel('Public repository URL').fill('https://github.com/samples/booking');
-  await page.getByRole('button',{name:'Import project',exact:true}).click();
+  await page.getByRole('button',{name:'Create project',exact:true}).click();
   await expect(page.locator('#projectCrumb')).toHaveText('samples/booking');
   await expect(page.locator('#files button')).toHaveCount(1);
   await expect(page.locator('#filename')).toHaveText('nested/Booking.tla');

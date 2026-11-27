@@ -170,7 +170,7 @@ $("settings").onclick=()=>{
     persist();$("dialog").close();run();
   };
 };
-$("guide").onclick=()=>dialog('<h2>Quick reference</h2><p>This checker explores a finite-state subset of TLA+. Use it to check safety invariants.</p><p>Declare variables with <code>VARIABLE</code> or <code>VARIABLES</code>. In <code>Init</code>, assign an integer, string, or Boolean value to each variable.</p><p>Define each action with guards and one primed assignment per variable. Use <code>x&#39; = x</code> to keep a value. Join named actions in <code>Next</code> with <code>\\\\/</code>.</p><p>Use a primed membership constraint such as <code>i&#39; &#92;in 0..10</code> for integer choices. Import a .tla file together with its matching .cfg to use its model settings. Use integer arithmetic, comparisons, parentheses, conjunction and disjunction. Choose the invariant and state limit in Configuration.</p><p>In the Seat reservations project, open <b>HappyPath.tla</b> and try Reserve with 4 seats. The action accepts 1 to 3 seats, so the state stays open. Try again with 2 seats, then apply Confirm. Expand either step under Applied transitions to see what changed. Select Reset to start again. Edits are saved in this browser.</p>'.replace("x\\'","x'"));
+$("guide").onclick=()=>dialog('<h2>Quick reference</h2><p>This checker explores a finite-state subset of TLA+. Use it to check safety invariants.</p><p>Declare variables with <code>VARIABLE</code> or <code>VARIABLES</code>. In <code>Init</code>, assign an integer, string, or Boolean value to each variable.</p><p>Define each action with guards and one primed assignment per variable. Use <code>x&#39; = x</code> to keep a value. Join named actions in <code>Next</code> with <code>\\\\/</code>.</p><p>Use a primed membership constraint such as <code>i&#39; &#92;in 0..10</code> for integer choices. Use Add .tla / .cfg files in the active project. You can add a matching configuration with its model or later. Use integer arithmetic, comparisons, parentheses, conjunction and disjunction. Choose the invariant and state limit in Configuration.</p><p>In the Seat reservations project, open <b>HappyPath.tla</b> and try Reserve with 4 seats. The action accepts 1 to 3 seats, so the state stays open. Try again with 2 seats, then apply Confirm. Expand either step under Applied transitions to see what changed. Select Reset to start again. Edits are saved in this browser.</p>'.replace("x\\'","x'"));
 function blankModel(name){
   return {name,limit:10000,source:["---- MODULE "+name+" ----","EXTENDS Integers","VARIABLE count","Init == count = 0","Next == count' = count","Safety == count = 0","====",""].join("\n")};
 }
@@ -183,6 +183,13 @@ $("projectList").onchange=e=>{workspace.active=Number(e.target.value);openFile(p
 function createItem(isProject){
   const kind=isProject?"project":"model";
   dialog('<h2>New '+kind+'</h2><form id="create"><label>Name<input id="itemName" required autofocus></label><button class="primary">Create '+kind+'</button></form>');
+  if(isProject){
+    const github=document.createElement("button");
+    github.type="button";
+    github.textContent="Create from GitHub…";
+    github.onclick=createGitHubProject;
+    $("dialogbody").append(github);
+  }
   if(!isProject)$("itemName").pattern="[A-Za-z][A-Za-z0-9_]*";
   $("create").onsubmit=e=>{
     e.preventDefault();
@@ -199,24 +206,34 @@ function createItem(isProject){
 }
 $("newProject").onclick=()=>createItem(true);
 $("new").onclick=()=>createItem(false);
+$("addFiles").onclick=()=>$("upload").click();
 $("upload").onchange=async e=>{
   const files=Array.from(e.target.files);e.target.value="";
   if(!files.length)return;
   const target=project();
   try{
     const entries=await Promise.all(files.map(async f=>({path:f.name,text:await f.text()})));
-    for(const entry of entries.filter(e=>/\.cfg$/i.test(e.path))){
-      if(!entries.some(e=>/\.tla$/i.test(e.path)&&e.path.slice(0,-4)===entry.path.slice(0,-4)))
-        throw Error("Select the matching .tla file for "+entry.path+".");
-    }
-    const models=assembleModels(entries);
+    const modules=entries.filter(entry=>/\.tla$/i.test(entry.path));
+    const models=modules.length?assembleModels(entries):[];
     if(models.some(m=>target.files.some(f=>f.name===m.name)))throw Error("A model with this name already exists in this project.");
-    const first=target.files.length;target.files.push(...models);
+    const updates=new Map();
+    for(const entry of entries.filter(e=>/\.cfg$/i.test(e.path))){
+      const name=entry.path.slice(0,-4);
+      if(models.some(m=>m.name===name))continue;
+      const matches=target.files.filter(f=>f.name.split("/").pop()===name);
+      if(matches.length!==1)throw Error(matches.length?"More than one model matches "+entry.path+".":"Add "+name+".tla before or together with "+entry.path+".");
+      if(matches[0].configText!==undefined)throw Error(entry.path+" already exists. Open Configuration to edit it.");
+      updates.set(matches[0],entry.text);
+    }
+    if(!models.length && !updates.size)throw Error("Choose .tla or .cfg files.");
+    const first=models.length?target.files.length:target.files.indexOf(updates.keys().next().value);
+    for(const [model,config] of updates)model.configText=config;
+    target.files.push(...models);
     if(project()===target)openFile(first);else persist();
   }catch(err){dialog("<h2>Import error</h2><p>"+escape(err.message)+"</p>")}
 };
-$("github").onclick=()=>{
-  dialog('<h2>Import GitHub project</h2><form id="repoForm"><label>Public repository URL<input id="repoURL" type="url" required placeholder="https://github.com/owner/repo" autofocus></label><p>Import models and matching configurations from the repository’s top-level <code>/tla</code> directory.</p><button class="primary">Import project</button><p id="repoStatus" aria-live="polite"></p></form>');
+function createGitHubProject(){
+  dialog('<h2>Create project from GitHub</h2><form id="repoForm"><label>Public repository URL<input id="repoURL" type="url" required placeholder="https://github.com/owner/repo" autofocus></label><p>Import models and matching configurations from the repository’s top-level <code>/tla</code> directory.</p><button class="primary">Create project</button><p id="repoStatus" aria-live="polite"></p></form>');
   const controller=new AbortController();
   $("dialog").addEventListener("close",()=>controller.abort(),{once:true});
   $("repoForm").onsubmit=async e=>{
