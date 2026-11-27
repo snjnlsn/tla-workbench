@@ -65,8 +65,8 @@ test('TLC and shipped WASM reject the same precedence conflict',()=>{
   assert.match(tlc.log,/Precedence conflict/);
   assert.match(check(spec.source,readConfig(spec.cfg)).error,/Precedence conflict/);
 });
-test('Test.tla and Test.cfg produce identical reachable graphs',()=>{
-  const spec=fixture('../../example_tla','Test');
+test('TLC and WASM agree on a wide integer range with terminal states',()=>{
+  const spec=fixture('fixtures','WideRange');
   const tlc=reference(spec);
   assert.equal(tlc.status,0,tlc.log);
   assert.equal(tlc.graph.states.size,2003);
