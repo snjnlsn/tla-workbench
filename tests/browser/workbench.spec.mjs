@@ -44,7 +44,7 @@ test('try values on both example paths and retain the graph picker',async({page}
   await expect(page.getByLabel('Active project')).toHaveValue('0');
   await expect(page.locator('#projectList option')).toHaveCount(1);
   await expect(sim.getByRole('combobox',{name:'Action'})).toHaveValue('0');
-  const seats=sim.getByRole('textbox',{name:/seats′/});
+  const seats=sim.getByRole('spinbutton',{name:/seats′/});
   await seats.fill('4');
   await sim.getByRole('button',{name:'Try transition'}).click();
   await expect(sim).toContainText('seats must be an integer from 1 to 3');
@@ -108,4 +108,46 @@ test('previous workspaces survive migration',async({page})=>{
   await expect(page.locator('#projectCrumb')).toHaveText('Previous workspace');
   await expect(page.locator('#filename')).toHaveText('Saved.tla');
   await expect(page.locator('#simulator dd')).toHaveText('7');
+});
+
+test('string fields accept plain text, including empty values and literal quotes',async({page})=>{
+  await page.goto('./');
+  const values=['TRUE','42','  say "yes"  ',''];
+  const actions=values.map((value,i)=>'Step'+i+' == s = '+JSON.stringify(i?values[i-1]:'initial')+" /\\ s' = "+JSON.stringify(value));
+  const source=['---- MODULE Strings ----','VARIABLE s','Init == s = "initial"','Safety == TRUE',...actions,
+    'Next == '+values.map((_,i)=>'Step'+i).join(' \\/ '),'===='].join('\n');
+  await page.getByLabel('TLA+ specification editor').fill(source);
+  await page.getByRole('button',{name:/Run model/}).click();
+  const runner=page.locator('#simulator');
+  for(const value of values){
+    const field=runner.getByRole('textbox',{name:'s′'});
+    await expect(field).toHaveValue(value);
+    await field.fill(value);
+    await runner.getByRole('button',{name:'Try transition'}).click();
+    await expect(runner.locator('dd')).toHaveText(JSON.stringify(value),{useInnerText:false});
+  }
+  await expect(runner).toContainText('No enabled actions');
+});
+
+test('Boolean choices and native integer validation',async({page})=>{
+  await page.goto('./');
+  const source=['---- MODULE Controls ----','VARIABLES enabled, n','Init == enabled = FALSE /\\ n = 0',
+    "Next == enabled' = TRUE /\\ n' \\in 1..3",'Safety == TRUE','===='].join('\n');
+  await page.getByLabel('TLA+ specification editor').fill(source);
+  await page.getByRole('button',{name:/Run model/}).click();
+  const runner=page.locator('#simulator');
+  const bool=runner.getByRole('combobox',{name:'enabled′'});
+  const number=runner.getByRole('spinbutton',{name:/n′/});
+  await expect(bool).toHaveValue('TRUE');
+  await number.fill('1.5');
+  await runner.getByRole('button',{name:'Try transition'}).click();
+  expect(await number.evaluate(input=>input.validity.stepMismatch)).toBe(true);
+  await expect(runner.locator('dd').last()).toHaveText('0');
+  await number.fill('2');
+  await bool.selectOption('FALSE');
+  await runner.getByRole('button',{name:'Try transition'}).click();
+  await expect(runner).toContainText('enabled must be TRUE');
+  await bool.selectOption('TRUE');
+  await runner.getByRole('button',{name:'Try transition'}).click();
+  await expect(runner.locator('dd')).toHaveText(['TRUE','2']);
 });

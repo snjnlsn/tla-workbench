@@ -1,4 +1,22 @@
 // Keep exact TLA literals across the worker boundary, including 64-bit integers.
+function proposalField(literal) {
+  if(literal.startsWith('"')){
+    const box=document.createElement('textarea');
+    box.rows=1;box.value=JSON.parse(literal);
+    box.spellcheck=false;box.autocomplete='off';
+    return {box,read:()=>JSON.stringify(box.value)};
+  }
+  if(literal==='TRUE' || literal==='FALSE'){
+    const box=document.createElement('select');
+    box.add(new Option('TRUE'));box.add(new Option('FALSE'));
+    box.value=literal;
+    return {box,read:()=>box.value};
+  }
+  const box=document.createElement('input');
+  box.type='number';box.step='1';box.required=true;box.value=literal;
+  return {box,read:()=>box.value};
+}
+
 export function simulator(container, request) {
   let view, history=[], generation=0, selection=0;
   const section = (tag,text) => Object.assign(document.createElement(tag),{textContent:text});
@@ -51,18 +69,17 @@ export function simulator(container, request) {
     variables.forEach((v,i)=>{
       const field=action.fields[i];
       if(!field.editable)return;
-      const box=document.createElement('input');box.type='text';box.required=true;
-      box.value=field.first;box.autocomplete='off';box.spellcheck=false;
+      const {box,read}=proposalField(field.first);
       const label=section('label',v+"′");label.append(box);
       if(field.first!==field.last)label.append(section('small','Integer range '+field.first+' … '+field.last));
-      fieldset.append(label);inputs.push([i,box]);
+      fieldset.append(label);inputs.push({i,read});
     });
     if(!inputs.length)fieldset.append(section('p','This action keeps every variable unchanged.'));
     const submit=section('button','Try transition');submit.className='primary';fieldset.append(submit,feedback);
     form.onsubmit=async event=>{
       event.preventDefault();
       const candidate=current.slice();
-      for(const [i,box] of inputs)candidate[i]=box.value;
+      for(const {i,read} of inputs)candidate[i]=read();
       const token=++generation;
       fieldset.disabled=true;
       try{
