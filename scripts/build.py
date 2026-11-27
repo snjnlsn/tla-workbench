@@ -1,4 +1,5 @@
 """Build the browser checker with portable source paths."""
+import json
 import os
 import shutil
 import subprocess
@@ -22,3 +23,6 @@ subprocess.run(
     cwd=root, env=env, check=True,
 )
 shutil.copyfile(root / "target" / target / "release/tla_workbench.wasm", root / "dist/checker.wasm")
+
+examples = {p.stem: p.read_text() for p in sorted((root / "tla").glob("*.tla"))}
+(root / "dist/examples.mjs").write_text("export const examples = " + json.dumps(examples, indent=2) + ";\n")

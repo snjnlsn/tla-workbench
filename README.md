@@ -20,7 +20,15 @@ Start the server from the project directory.
 mise run serve
 ```
 
-Open [the workbench](http://127.0.0.1:8080). Select **Counter.tla** to explore five reachable states. Select **Overflow.tla** to inspect a failing invariant. Select a graph node or trace step to see its variable values. Press Ctrl+C in the terminal to stop the server.
+Open [the workbench](http://127.0.0.1:8080). In **Seat reservations**, open **HappyPath.tla** and reserve one to three seats. In **SadPath.tla**, reserve four seats to reach a state that violates Safety. Press Ctrl+C in the terminal to stop the server.
+
+## Projects and state exploration
+
+Create a project with the plus button next to **Projects**. Add models with the plus button next to **Models**, or import multiple local files and their matching configurations. Select **Import from GitHub** and paste a public repository URL to create a project from its default branch. The importer reads the top-level **tla/** directory, includes nested folders, and pairs each module with a same-name .cfg in its own folder. Try this repository's URL to import the seat reservation examples. Each model runs independently. Projects and edits are saved in this browser.
+
+**Try a transition** starts at the first initial state. Choose an enabled action, enter proposed next values for the variables it can change, and select **Try transition**. Enter strings in double quotes and Booleans as TRUE or FALSE. The checker validates the entire proposed state and reports whether the invariant holds. Use **Back** to try a different choice.
+
+Switch to **State graph** for the graph preview and the full picker of recorded successors at the selected state. The simulator evaluates actions directly and can explore beyond the model checker's state limit.
 
 ## Local settings
 
