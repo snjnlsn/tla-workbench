@@ -1,22 +1,30 @@
-//! Check finite integer-state models and return a graph of reachable states.
+//! Check finite-state models and return a graph of reachable states.
 use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 type Result<T> = std::result::Result<T, String>;
-type State = Vec<i64>;
+type State = Vec<Scalar>;
 
 #[derive(Clone)]
 enum Expr {
     Atom(String),
     Binary(String, Box<Expr>, Box<Expr>),
 }
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Scalar {
     Int(i64),
     Bool(bool),
+    Text(String),
 }
 impl Scalar {
+    fn json(&self) -> Value {
+        match self {
+            Self::Int(n) => json!(n),
+            Self::Bool(b) => json!(b),
+            Self::Text(s) => json!(s),
+        }
+    }
     fn integer(self) -> Result<i64> {
         match self {
             Self::Int(n) => Ok(n),
@@ -38,8 +46,22 @@ fn tokens(mut s: &str) -> Result<Vec<String>> {
     let mut out = Vec::new();
     while !s.trim_start().is_empty() {
         s = s.trim_start();
-        let n = if let Some(op) = [
-            "/\\", "\\/", "<=", ">=", "/=", "(", ")", "+", "-", "*", "=", "<", ">",
+        let n = if s.starts_with('"') {
+            let mut escaped = false;
+            let mut end = None;
+            for (i, c) in s.char_indices().skip(1) {
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == '"' {
+                    end = Some(i + 1);
+                    break;
+                }
+            }
+            end.ok_or("Unterminated string literal")?
+        } else if let Some(op) = [
+            "\\in", "..", "/\\", "\\/", "<=", ">=", "/=", "(", ")", "+", "-", "*", "=", "<", ">",
         ]
         .iter()
         .find(|op| s.starts_with(**op))
@@ -65,9 +87,10 @@ fn precedence(s: &str) -> u8 {
     match s {
         "\\/" => 1,
         "/\\" => 2,
-        "=" | "/=" | "<" | ">" | "<=" | ">=" => 3,
-        "+" | "-" => 4,
-        "*" => 5,
+        "\\in" | "=" | "/=" | "<" | ">" | "<=" | ">=" => 3,
+        ".." => 4,
+        "+" | "-" => 5,
+        "*" => 6,
         _ => 0,
     }
 }
@@ -86,9 +109,12 @@ fn parse(t: &[String], p: &mut usize, min: u8) -> Result<Expr> {
         "-" => Expr::Binary(
             "-".into(),
             Box::new(Expr::Atom("0".into())),
-            Box::new(parse(t, p, 6)?),
+            Box::new(parse(t, p, 7)?),
         ),
-        s if identifier(s.trim_end_matches('\'')) || s.parse::<i64>().is_ok() => {
+        s if s.starts_with('"')
+            || identifier(s.trim_end_matches('\''))
+            || s.parse::<i64>().is_ok() =>
+        {
             Expr::Atom(s.into())
         }
         _ => return Err(format!("Unexpected token {token}")),
@@ -119,6 +145,9 @@ fn eval(e: &Expr, vars: &[String], state: &State) -> Result<Scalar> {
     use Scalar::*;
     match e {
         Expr::Atom(s) => match s.as_str() {
+            s if s.starts_with('"') => serde_json::from_str(s)
+                .map(Text)
+                .map_err(|_| "Invalid string literal".into()),
             "TRUE" => Ok(Bool(true)),
             "FALSE" => Ok(Bool(false)),
             _ => {
@@ -128,7 +157,7 @@ fn eval(e: &Expr, vars: &[String], state: &State) -> Result<Scalar> {
                 vars.iter()
                     .position(|v| v == s)
                     .and_then(|i| state.get(i))
-                    .map(|n| Int(*n))
+                    .cloned()
                     .ok_or(format!("Unknown value {s}"))
             }
         },
@@ -169,11 +198,48 @@ fn parts<'a>(e: &'a Expr, op: &str, out: &mut Vec<&'a Expr>) {
     }
     out.push(e)
 }
-fn successor(e: &Expr, vars: &[String], state: &State, initial: bool) -> Result<Option<State>> {
+enum Domain {
+    Single(Scalar),
+    Range(i64, i64),
+}
+impl Domain {
+    fn first(&self) -> Option<Scalar> {
+        match self {
+            Self::Single(value) => Some(value.clone()),
+            Self::Range(lo, hi) if lo <= hi => Some(Scalar::Int(*lo)),
+            Self::Range(..) => None,
+        }
+    }
+}
+// Visit the Cartesian product lazily so a large interval respects the state limit.
+fn visit_states(domains: &[Domain], mut visit: impl FnMut(&State) -> bool) {
+    let Some(mut current): Option<State> = domains.iter().map(Domain::first).collect() else {
+        return;
+    };
+    loop {
+        if !visit(&current) {
+            return;
+        }
+        let mut advanced = false;
+        for (value, domain) in current.iter_mut().zip(domains).rev() {
+            if let (Scalar::Int(n), Domain::Range(lo, hi)) = (value, domain) {
+                if *n < *hi {
+                    *n += 1;
+                    advanced = true;
+                    break;
+                }
+                *n = *lo;
+            }
+        }
+        if !advanced {
+            return;
+        }
+    }
+}
+fn domains(e: &Expr, vars: &[String], state: &State, initial: bool) -> Result<Option<Vec<Domain>>> {
     let mut terms = vec![];
     parts(e, "/\\", &mut terms);
-    let mut values = vec![None; vars.len()];
-    let mut enabled = true;
+    let mut bindings = Vec::new();
     for term in terms {
         if let Expr::Binary(op, l, r) = term {
             if let Expr::Atom(name) = l.as_ref() {
@@ -183,31 +249,70 @@ fn successor(e: &Expr, vars: &[String], state: &State, initial: bool) -> Result<
                     name.strip_suffix('\'')
                 };
                 if let Some(i) = target.and_then(|n| vars.iter().position(|v| v == n)) {
-                    if op == "=" {
-                        let value = eval(r, vars, state)?.integer()?;
-                        if values[i].replace(value).is_some() {
-                            return Err(format!("Repeated assignment for {}", vars[i]));
-                        }
+                    if op == "=" || (!initial && op == "\\in") {
+                        bindings.push((i, op, r));
                         continue;
                     }
                 }
             }
         }
-        enabled &= eval(term, vars, state)?.boolean()?;
+        if !eval(term, vars, state)?.boolean()? {
+            return Ok(None);
+        }
     }
-    if values.contains(&None) {
-        return Err("Assign every variable once in Init and in each action".into());
+    let mut result: Vec<Option<Domain>> = (0..vars.len()).map(|_| None).collect();
+    for (i, op, r) in bindings {
+        let domain = if op == "=" {
+            Domain::Single(eval(r, vars, state)?)
+        } else {
+            match r.as_ref() {
+                Expr::Binary(range, lo, hi) if range == ".." => Domain::Range(
+                    eval(lo, vars, state)?.integer()?,
+                    eval(hi, vars, state)?.integer()?,
+                ),
+                _ => return Err("Expected an inclusive integer interval after \\in".into()),
+            }
+        };
+        if result[i].replace(domain).is_some() {
+            return Err(format!("Repeated assignment for {}", vars[i]));
+        }
     }
-    Ok(enabled.then(|| values.into_iter().flatten().collect()))
+    Ok(Some(result.into_iter().collect::<Option<Vec<_>>>().ok_or(
+        "Assign every variable once in Init and in each action",
+    )?))
 }
-fn check(source: &str, invariant: &str, limit: usize) -> Result<Value> {
+
+fn check(source: &str, input: &Value, limit: usize) -> Result<Value> {
+    let init_name = input["init"].as_str().unwrap_or("Init");
+    let next_name = input["next"].as_str().unwrap_or("Next");
+    let deadlocks = input["deadlock"].as_bool().unwrap_or(false);
     let mut vars = vec![];
     let mut defs = BTreeMap::new();
     let mut pending: Option<(String, String)> = None;
     let mut module = false;
     let mut closed = false;
     for raw in source.lines() {
-        let line = raw.split("\\*").next().unwrap().trim();
+        let mut quoted = false;
+        let mut escaped = false;
+        let mut end = raw.len();
+        for (i, c) in raw.char_indices() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if quoted && c == '\\' {
+                escaped = true;
+                continue;
+            }
+            if c == '"' {
+                quoted = !quoted
+            }
+            if !quoted && raw[i..].starts_with("\\*") {
+                end = i;
+                break;
+            }
+        }
+        let line = raw[..end].trim();
         if line.is_empty() {
             continue;
         }
@@ -228,7 +333,10 @@ fn check(source: &str, invariant: &str, limit: usize) -> Result<Value> {
             continue;
         }
         let end = line.len() >= 4 && line.bytes().all(|b| b == b'=');
-        if end || line.contains("==") {
+        let definition = line
+            .split_once("==")
+            .filter(|(name, _)| identifier(name.trim()));
+        if end || definition.is_some() {
             if let Some((name, body)) = pending.take() {
                 if defs
                     .insert(
@@ -245,7 +353,7 @@ fn check(source: &str, invariant: &str, limit: usize) -> Result<Value> {
             closed = true;
             continue;
         }
-        if let Some((name, body)) = line.split_once("==") {
+        if let Some((name, body)) = definition {
             if !identifier(name.trim()) {
                 return Err("Expected a named definition".into());
             }
@@ -276,16 +384,38 @@ fn check(source: &str, invariant: &str, limit: usize) -> Result<Value> {
         || vars.iter().any(|s| !identifier(s))
         || vars.iter().collect::<BTreeSet<_>>().len() != vars.len()
     {
-        return Err("Declare unique integer variables".into());
+        return Err("Declare unique variables".into());
     }
-    let init = successor(defs.get("Init").ok_or("Define Init")?, &vars, &vec![], true)?
+    let init_domains = domains(
+        defs.get(init_name).ok_or(format!("Define {init_name}"))?,
+        &vars,
+        &vec![],
+        true,
+    )?
+    .ok_or("Init has no initial state")?;
+    let init: State = init_domains
+        .iter()
+        .map(Domain::first)
+        .collect::<Option<_>>()
         .ok_or("Init has no initial state")?;
-    let inv = defs
-        .get(invariant)
-        .ok_or(format!("Define invariant {invariant}"))?;
+    let invariant = input["invariant"].as_str().unwrap_or_else(|| {
+        if defs.contains_key("Safety") {
+            "Safety"
+        } else {
+            ""
+        }
+    });
+    let inv = if invariant.is_empty() {
+        None
+    } else {
+        Some(
+            defs.get(invariant)
+                .ok_or(format!("Define invariant {invariant}"))?,
+        )
+    };
     let mut alternatives = vec![];
     parts(
-        defs.get("Next").ok_or("Define Next")?,
+        defs.get(next_name).ok_or(format!("Define {next_name}"))?,
         "\\/",
         &mut alternatives,
     );
@@ -308,37 +438,59 @@ fn check(source: &str, invariant: &str, limit: usize) -> Result<Value> {
     let mut status = "passed";
     let mut i = 0;
     'search: while i < states.len() {
-        if !eval(inv, &vars, &states[i])?.boolean()? {
-            status = "violated";
-            let mut at = Some(i);
-            while let Some(j) = at {
-                trace.push(j);
-                at = parents[j]
+        if let Some(inv) = inv {
+            if !eval(inv, &vars, &states[i])?.boolean()? {
+                status = "violated";
+                break;
             }
-            trace.reverse();
-            break;
         }
+        let mut enabled = false;
         for (name, e) in &actions {
-            if let Some(next) = successor(e, &vars, &states[i], false)? {
-                let j = if let Some(j) = ids.get(&next) {
-                    *j
-                } else {
-                    if states.len() >= limit {
-                        status = "limited";
-                        break 'search;
-                    }
-                    let j = states.len();
-                    ids.insert(next.clone(), j);
-                    states.push(next);
-                    parents.push(Some(i));
-                    j
-                };
-                edges.push(json!([i, j, name]));
+            if let Some(options) = domains(e, &vars, &states[i], false)? {
+                visit_states(&options, |next| {
+                    enabled = true;
+                    let j = if let Some(j) = ids.get(next) {
+                        *j
+                    } else {
+                        if states.len() >= limit {
+                            status = "limited";
+                            return false;
+                        }
+                        let j = states.len();
+                        ids.insert(next.clone(), j);
+                        states.push(next.clone());
+                        parents.push(Some(i));
+                        j
+                    };
+                    edges.push(json!([i, j, name]));
+                    true
+                });
+                if status == "limited" {
+                    break 'search;
+                }
             }
+        }
+        if deadlocks && !enabled {
+            status = "deadlock";
+            break;
         }
         i += 1
     }
-    Ok(json!({"status":status,"variables":vars,"states":states,"edges":edges,"trace":trace}))
+    if status == "violated" || status == "deadlock" {
+        let mut at = Some(i);
+        while let Some(j) = at {
+            trace.push(j);
+            at = parents[j]
+        }
+        trace.reverse();
+    }
+    let states: Vec<Vec<Value>> = states
+        .iter()
+        .map(|state| state.iter().map(Scalar::json).collect())
+        .collect();
+    Ok(
+        json!({"status":status,"invariant":invariant,"variables":vars,"states":states,"edges":edges,"trace":trace}),
+    )
 }
 thread_local! {static OUTPUT:RefCell<Vec<u8>>=const{RefCell::new(Vec::new())};}
 #[no_mangle]
@@ -353,8 +505,8 @@ pub unsafe extern "C" fn run(ptr: *mut u8, n: usize) -> usize {
         let input: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
         check(
             input["source"].as_str().ok_or("Missing source")?,
-            input["invariant"].as_str().ok_or("Missing invariant")?,
-            input["limit"].as_u64().unwrap_or(1000).clamp(1, 10000) as usize,
+            &input,
+            input["limit"].as_u64().unwrap_or(10000).clamp(1, 10000) as usize,
         )
     })();
     OUTPUT.with(|o| {

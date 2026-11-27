@@ -1,3 +1,4 @@
+import {readConfig} from "./config.mjs";
 const $ = id => document.getElementById(id);
 const escape = value => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const moduleText = (name, body) => "---- MODULE " + name + " ----\nEXTENDS Integers\n\n" + body + "\n====\n";
@@ -48,8 +49,8 @@ function run(){
 }
 $("run").onclick=run;document.addEventListener("keydown",e=>{if((e.metaKey||e.ctrlKey)&&e.key==="Enter"&&!$("dialog").open){e.preventDefault();run()}});
 function renderResult(ms){
-  const r=result,titles={passed:"Invariant holds",violated:"Invariant violated",limited:"Check incomplete",error:"Specification error"};
-  const detail=r.error??(r.status==="passed"?file().invariant+" holds in every reachable state.":r.status==="limited"?"The state limit stopped exploration.":"A reachable state violates "+file().invariant+".");
+  const r=result,titles={passed:r.invariant?"Invariant holds":"Exploration complete",deadlock:"Deadlock found",violated:"Invariant violated",limited:"Check incomplete",error:"Specification error"};
+  const detail=r.error??(r.status==="passed"?(r.invariant?r.invariant+" holds in every reachable state.":"Explored all reachable states. No invariant selected."):r.status==="limited"?"The state limit stopped exploration.":r.status==="deadlock"?"No action is enabled in the final trace state.":"A reachable state violates "+r.invariant+".");
   const metrics=r.states?[["States",r.states.length],["Transitions",r.edges.length],["Elapsed",Math.round(ms)+" ms"]]:[];
   $("summary").innerHTML='<div class="status"><span class="stamp '+(r.status==="passed"?"":"bad")+'">'+(r.status==="passed"?"✓":"!")+'</span><div><strong>'+titles[r.status]+'</strong><small>'+escape(detail)+'</small></div></div>'+metrics.map(([label,value])=>'<div class="metric"><small>'+label+'</small><b>'+value+'</b></div>').join("");
   if(!r.states){$("canvas").textContent="No state graph available.";$("graphcount").textContent="—";return}
@@ -78,16 +79,28 @@ function drawGraph(){
   }
   $("canvas").innerHTML=svg+"</svg>";
   for(const node of $("canvas").querySelectorAll(".node")){node.onclick=()=>selectState(+node.dataset.id);node.onkeydown=e=>{if(["Enter"," "].includes(e.key)){e.preventDefault();node.click();$("canvas").querySelector('[data-id="'+selected+'"]').focus()}}}
-  $("inspector").innerHTML='<b>S'+selected+'</b> '+escape(variables.map((v,i)=>v+" = "+states[selected][i]).join(", "))+(selected===0?" · Initial state":"");
+  $("inspector").innerHTML='<b>S'+selected+'</b> '+escape(variables.map((v,i)=>v+" = "+JSON.stringify(states[selected][i])).join(", "))+(selected===0?" · Initial state":"");
 }
 function dialog(html){$("dialogbody").innerHTML=html;$("dialog").showModal()}
 $("settings").onclick=()=>{
-  dialog('<h2>Model configuration</h2><form id="config"><label>Invariant name<input id="inv" required pattern="[A-Za-z][A-Za-z0-9_]*"></label><label>State limit<input id="limit" type="number" min="1" max="10000" required></label><button class="primary">Apply and run</button></form>');
-  $("inv").value=file().invariant;$("limit").value=file().limit;$("config").onsubmit=e=>{e.preventDefault();file().invariant=$("inv").value;file().limit=+$("limit").value;persist();$("dialog").close();run()};
+  dialog('<h2>Model configuration</h2><form id="config"><label>Invariant name (optional)<input id="inv" pattern="[A-Za-z][A-Za-z0-9_]*"></label><label>State limit<input id="limit" type="number" min="1" max="10000" required></label><label><input id="deadlock" type="checkbox" style="width:auto"> Check deadlocks</label><button class="primary">Apply and run</button></form>');
+  $("deadlock").checked=!!file().deadlock;$("inv").value=file().invariant??result?.invariant??"";$("limit").value=file().limit;$("config").onsubmit=e=>{e.preventDefault();file().deadlock=$("deadlock").checked;file().invariant=$("inv").value;file().limit=+$("limit").value;persist();$("dialog").close();run()};
 };
-$("guide").onclick=()=>dialog('<h2>Quick reference</h2><p>This checker explores a finite, integer-state subset of TLA+. Use it to check safety invariants.</p><p>Declare integer variables with <code>VARIABLE</code> or <code>VARIABLES</code>. In <code>Init</code>, assign a value to each variable.</p><p>Define each action with guards and one primed assignment per variable. Use <code>x&#39; = x</code> to keep a value. Join named actions in <code>Next</code> with <code>\\\\/</code>.</p><p>Use integer arithmetic, comparisons, parentheses, conjunction and disjunction. Choose the invariant and state limit in Configuration.</p><p>Open <b>Overflow.tla</b> to inspect a failing trace. Edits are saved in this browser.</p>'.replace("x\\'","x'"));
-function addFile(name,source){workspace.files.push({name,source,invariant:"Safety",limit:1000});openFile(workspace.files.length-1)}
+$("guide").onclick=()=>dialog('<h2>Quick reference</h2><p>This checker explores a finite-state subset of TLA+. Use it to check safety invariants.</p><p>Declare variables with <code>VARIABLE</code> or <code>VARIABLES</code>. In <code>Init</code>, assign an integer, string, or Boolean value to each variable.</p><p>Define each action with guards and one primed assignment per variable. Use <code>x&#39; = x</code> to keep a value. Join named actions in <code>Next</code> with <code>\\\\/</code>.</p><p>Use a primed membership constraint such as <code>i&#39; &#92;in 0..10</code> for integer choices. Import a .tla file together with its matching .cfg to use its model settings. Use integer arithmetic, comparisons, parentheses, conjunction and disjunction. Choose the invariant and state limit in Configuration.</p><p>Open <b>Overflow.tla</b> to inspect a failing trace. Edits are saved in this browser.</p>'.replace("x\\'","x'"));
+function addFile(name,source,settings={}){workspace.files.push({name,source,limit:10000,...settings});openFile(workspace.files.length-1)}
 $("new").onclick=()=>{dialog('<h2>New specification</h2><form id="create"><label>Module name<input id="name" required pattern="[A-Za-z][A-Za-z0-9_]*" autofocus></label><button class="primary">Create specification</button></form>');$("create").onsubmit=e=>{e.preventDefault();const name=$("name").value;$("dialog").close();addFile(name,counter.replace("MODULE Counter","MODULE "+name))}};
-$("upload").onchange=async e=>{const f=e.target.files[0];if(f)addFile(f.name.replace(/\.tla$/i,""),await f.text());e.target.value=""};
+$("upload").onchange=async event=>{
+  const files=Array.from(event.target.files);
+  event.target.value="";
+  if(!files.length)return;
+  try {
+    const spec=files.find(f=>/\.tla$/i.test(f.name));
+    const config=files.find(f=>/\.cfg$/i.test(f.name));
+    if(!spec || files.length!==1+Number(!!config))throw Error("Select one .tla file and optionally its matching .cfg file.");
+    const name=spec.name.replace(/\.tla$/i,"");
+    if(config && config.name.replace(/\.cfg$/i,"")!==name)throw Error("Select a configuration with the same base name as the module.");
+    addFile(name,await spec.text(),config?readConfig(await config.text()):{});
+  } catch(error){dialog("<h2>Import error</h2><p>"+escape(error.message)+"</p>")}
+};
 $("download").onclick=()=>{const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([file().source],{type:"text/plain"}));a.download=file().name+".tla";a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)};
 openFile(workspace.active);
