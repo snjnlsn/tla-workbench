@@ -38,7 +38,7 @@ test('edit and rerun after an ambiguous expression',async({page})=>{
   await expect(page.getByRole('status')).toContainText('Invariant holds');
 });
 
-test('try values on both example paths and retain the graph picker',async({page})=>{
+test('inspect applied transitions, undo and reset the example run',async({page})=>{
   await page.goto('./');
   const sim=page.locator('#simulator');
   await expect(page.getByLabel('Active project')).toHaveValue('0');
@@ -49,21 +49,28 @@ test('try values on both example paths and retain the graph picker',async({page}
   await sim.getByRole('button',{name:'Try transition'}).click();
   await expect(sim).toContainText('seats must be an integer from 1 to 3');
   await expect(sim.locator('dd').first()).toHaveText('"open"');
+  await expect(sim.locator('details')).toHaveCount(0);
   await seats.fill('2');
   await sim.getByRole('button',{name:'Try transition'}).click();
   await expect(sim.locator('dd').last()).toHaveText('2');
   await expect(seats).toHaveCount(0);
   await sim.getByRole('button',{name:'Back'}).click();
   await expect(sim.locator('dd').last()).toHaveText('0');
-  await page.getByRole('button',{name:/SadPath.tla/}).click();
-  await expect(page.getByRole('status')).toContainText('Invariant violated');
-  await expect(sim.locator('dd').first()).toHaveText('"open"');
-  await seats.fill('4');
+  const steps = sim.locator('details');
+  await expect(steps).toHaveCount(0);
+  await expect(page.locator('#files button')).toHaveCount(1);
+  await seats.fill('3');
   await sim.getByRole('button',{name:'Try transition'}).click();
-  await expect(sim).toContainText('This state violates the invariant');
   await sim.getByRole('button',{name:'Try transition'}).click();
   await expect(sim.locator('dd').first()).toHaveText('"confirmed"');
+  await expect(steps.locator('summary')).toHaveText(['1. Reserve','2. Confirm']);
+  await steps.first().locator('summary').click();
+  await expect(steps.first().getByText('seats 0 → 3')).toBeVisible();
+  await steps.last().locator('summary').click();
+  await expect(steps.last().getByText('stage "reserved" → "confirmed"')).toBeVisible();
+  await expect(steps.last().getByText('seats 3 (unchanged)')).toBeVisible();
   await sim.getByRole('button',{name:'Reset',exact:true}).click();
+  await expect(steps).toHaveCount(0);
   await expect(sim.locator('dd')).toHaveText(['"open"','0']);
   await expect(sim.getByRole('button',{name:'Back',exact:true})).toHaveCount(0);
   await expect(seats).toHaveValue('1');
@@ -82,7 +89,7 @@ test('projects keep their models separate and import a public /tla tree atomical
   await page.getByRole('button',{name:'New project'}).click();
   await page.getByLabel('Name',{exact:true}).fill('Workshop');
   await page.getByRole('button',{name:'Create project'}).click();
-  await page.locator('#upload').setInputFiles(['tla/HappyPath.tla','tla/SadPath.tla']);
+  await page.locator('#upload').setInputFiles(['tla/HappyPath.tla','example_tla/Test.tla']);
   await expect(page.locator('#files button')).toHaveCount(3);
   const endpoint='https://api.github.com/repos/samples/booking/git/';
   await page.route(endpoint+'**',async route=>{

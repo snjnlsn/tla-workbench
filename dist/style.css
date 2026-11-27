@@ -21,3 +21,8 @@
 @media(max-width:700px){.workspace{grid-template-columns:minmax(0,1fr)}nav{overflow:auto}#simulator{padding:14px}.hero{margin-bottom:16px}}
 
 #simulator textarea{resize:vertical}
+
+.stateHeading .resetTransition{margin-left:6px;padding:5px 12px;border:1px solid #8aab9c;border-radius:5px;background:white;text-decoration:none;font-weight:600}
+.transitionHistory{margin-top:18px}.transitionHistory h3{margin:0 0 6px;font-size:14px}
+.transitionHistory details{border-top:1px solid #dce1da}.transitionHistory summary{padding:7px 0;cursor:pointer}
+.transitionHistory ul{margin:0 0 10px;padding-left:24px;font:13px/1.6 ui-monospace,monospace;overflow-wrap:anywhere}

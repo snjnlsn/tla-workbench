@@ -4,14 +4,28 @@ export function loadWorkspace(storage) {
     try {return JSON.parse(storage.getItem(key))} catch {return null}
   };
   const saved = get('tla-projects-1');
-  if(saved?.projects?.[saved.active]) return saved;
+  if(saved?.projects?.[saved.active]) {
+    if(!saved.exampleRevision) {
+      const seed = saved.projects[0];
+      const legacySource = examples.HappyPath.replace('MODULE HappyPath','MODULE SadPath').replace('1..3','1..4');
+      const old = seed.files[1];
+      if(seed.name === 'Seat reservations' && seed.files[0]?.name === 'HappyPath' &&
+         old?.name === 'SadPath' && old.source === legacySource && old.invariant === 'Safety' &&
+         old.limit === 10000 && old.deadlock === undefined && old.configText === undefined) {
+        seed.files.splice(1,1);
+        if(seed.active >= 1) seed.active--;
+      }
+      saved.exampleRevision = 2;
+    }
+    return saved;
+  }
   const files = Object.entries(examples).map(([name,source])=>({
     name,source,invariant:'Safety',limit:10000,
   }));
   const projects=[{name:'Seat reservations',files,active:0}];
   const old=get('tla-workbench-1');
   if(old?.files?.length) projects.push({name:'Previous workspace',files:old.files,active:old.active||0});
-  return {projects,active:projects.length-1};
+  return {projects,active:projects.length-1,exampleRevision:2};
 }
 
 export function assembleModels(entries) {
