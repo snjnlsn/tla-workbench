@@ -26,7 +26,7 @@ Open [the workbench](http://127.0.0.1:8080). In **Seat reservations**, open **Ha
 
 Create a project with the plus button next to **Projects**. Add models with the plus button next to **Models**, or import multiple local files and their matching configurations. Select **Import from GitHub** and paste a public repository URL to create a project from its default branch. The importer reads the top-level **tla/** directory, includes nested folders, and pairs each module with a same-name .cfg in its own folder. Try this repository's URL to import the seat reservation examples. Each model runs independently. Projects and edits are saved in this browser.
 
-**Try a transition** starts at the first initial state. Choose an enabled action, enter proposed next values for the variables it can change, and select **Try transition**. Enter strings as plain text, select TRUE or FALSE for Booleans, and enter whole numbers in the integer fields. The checker validates the entire proposed state and reports whether the invariant holds. Use **Back** to try a different choice.
+**Try a transition** starts at the first initial state. Choose an enabled action, enter proposed next values for the variables it can change, and select **Try transition**. Enter strings as plain text, select TRUE or FALSE for Booleans, and enter whole numbers in the integer fields. The checker validates the entire proposed state and reports whether the invariant holds. Use **Back** to undo one step. Use **Reset** to return to the initial state and clear the transition history and form.
 
 Switch to **State graph** for the graph preview and the full picker of recorded successors at the selected state. The simulator evaluates actions directly and can explore beyond the model checker's state limit.
 
