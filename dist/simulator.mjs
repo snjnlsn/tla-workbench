@@ -18,11 +18,11 @@ function proposalField(literal) {
 }
 
 export function simulator(container, request) {
-  let view, history=[], generation=0, selection=0;
+  let view, initial, history=[], generation=0, selection=0;
   const section = (tag,text) => Object.assign(document.createElement(tag),{textContent:text});
   const button = (text,click) => Object.assign(section('button',text),{type:'button',onclick:click});
   function clear(message) {
-    generation++;view=null;history=[];selection=0;
+    generation++;view=null;initial=null;history=[];selection=0;
     container.replaceChildren(section('p',message));
   }
   async function load() {
@@ -34,15 +34,20 @@ export function simulator(container, request) {
       container.replaceChildren(section('p',next.error));
       return;
     }
-    view=next;selection=0;render();
+    initial=next;view=initial;selection=0;render();
   }
   function render(message='') {
     const {variables,current,actions}=view;
     const top=document.createElement('div');top.className='stateHeading';
     top.append(section('h3',history.length?'Current state':'Starting state'));
-    if(history.length)top.append(button('Back',()=>{
+    const controls=document.createElement('div');
+    if(history.length)controls.append(button('Back',()=>{
       generation++;const prior=history.pop();view=prior.view;selection=prior.selection;render();
     }));
+    controls.append(button('Reset',()=>{
+      generation++;history=[];view=initial;selection=0;render();
+    }));
+    top.append(controls);
     const values=document.createElement('dl');values.className='stateValues';
     variables.forEach((v,i)=>values.append(section('dt',v),section('dd',current[i])));
     container.replaceChildren(top,values);

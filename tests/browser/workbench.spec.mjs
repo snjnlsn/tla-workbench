@@ -61,6 +61,18 @@ test('try values on both example paths and retain the graph picker',async({page}
   await seats.fill('4');
   await sim.getByRole('button',{name:'Try transition'}).click();
   await expect(sim).toContainText('This state violates the invariant');
+  await sim.getByRole('button',{name:'Try transition'}).click();
+  await expect(sim.locator('dd').first()).toHaveText('"confirmed"');
+  await sim.getByRole('button',{name:'Reset',exact:true}).click();
+  await expect(sim.locator('dd')).toHaveText(['"open"','0']);
+  await expect(sim.getByRole('button',{name:'Back',exact:true})).toHaveCount(0);
+  await expect(seats).toHaveValue('1');
+  await seats.fill('9');
+  await sim.getByRole('button',{name:'Try transition'}).click();
+  await expect(sim).toContainText('seats must be an integer');
+  await sim.getByRole('button',{name:'Reset',exact:true}).click();
+  await expect(seats).toHaveValue('1');
+  await expect(sim).not.toContainText('seats must be an integer');
   await page.getByRole('button',{name:'State graph',exact:true}).click();
   await expect(page.getByLabel('Reachable state graph')).toBeVisible();
 });
